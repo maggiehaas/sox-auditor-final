@@ -1,0 +1,67 @@
+name: SOX AI Auditor
+on:
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Google AI
+        run: pip install google-generativeai
+
+      - name: Run AI Audit
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python - <<EOF
+          import os
+          import subprocess
+          import time
+          import google.generativeai as genai
+
+          genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+          model = genai.GenerativeModel('gemini-1.5-flash')
+
+          def get_audit():
+              # Compare branch to main
+              diff = subprocess.check_output(['git', 'diff', 'origin/main...HEAD'], text=True)
+              if not diff.strip(): return "No logic changes detected."
+
+              prompt = f"Identify if these changes are Functional or Non-Functional for SOX. Summarize risk in 2 sentences:\n\n{diff}"
+              
+              # Retry logic for the 429 error
+              for attempt in range(3):
+                  try:
+                      return model.generate_content(prompt).text
+                  except Exception as e:
+                      if "429" in str(e) and attempt < 2:
+                          print("Rate limit hit. Waiting 65s...")
+                          time.sleep(65)
+                      else:
+                          return f"Audit Error: {str(e)}"
+
+          report = get_audit()
+          with open("ai_report.txt", "w") as f:
+              f.write(f"### 🛡️ SOX Audit Result\n\n{report}")
+          EOF
+
+      - name: Post Comment
+        uses: mshick/add-pr-comment@v2
+        with:
+          message-path: ai_report.txt
